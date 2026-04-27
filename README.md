@@ -1,4 +1,4 @@
-# beatport-sync
+# playlist-syncer
 
 CLI tool to migrate Apple Music library and playlists to Beatport genre playlists.
 
