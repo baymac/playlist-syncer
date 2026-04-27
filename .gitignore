@@ -6,3 +6,13 @@ __pycache__/
 logs/
 state/
 auth_state.json
+.gstack/
+.pytest_cache/
+
+# Personal notes / project artifacts — not for the public repo
+docs/
+references/
+TODOS.md
+blog.md
+discovery_notes.md
+SKILL.md
