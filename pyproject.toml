@@ -1,7 +1,7 @@
 [project]
-name = "beatport-sync"
+name = "playlist-syncer"
 version = "0.1.0"
-description = "CLI tool to migrate Apple Music library/playlists to Beatport genre playlists."
+description = "CLI tool to sync Apple Music library/playlists across music platforms."
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.3.3",
@@ -17,17 +17,17 @@ dev = [
 ]
 
 [project.scripts]
-beatport-sync = "beatport_sync.cli:cli"
+playlist-syncer = "playlist_syncer.cli:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["beatport_sync"]
+packages = ["playlist_syncer"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"beatport_sync/bridge/musickit_bridge.swift" = "beatport_sync/bridge/musickit_bridge.swift"
+"playlist_syncer/bridge/musickit_bridge.swift" = "playlist_syncer/bridge/musickit_bridge.swift"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

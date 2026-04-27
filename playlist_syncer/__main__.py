@@ -1,4 +1,4 @@
-from beatport_sync.cli import cli
+from playlist_syncer.cli import cli
 
 if __name__ == "__main__":
     cli()
