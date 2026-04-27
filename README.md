@@ -77,6 +77,7 @@ docs/               # project notes and writeup
 ## Run tests
 
 ```bash
+uv sync --extra dev
 uv run pytest
 ```
 
