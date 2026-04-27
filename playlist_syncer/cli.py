@@ -1,4 +1,4 @@
-"""Click CLI entry points for the Apple Music → Beatport sync."""
+"""Click CLI entry points for playlist-syncer."""
 from __future__ import annotations
 
 import sys
@@ -7,18 +7,23 @@ from typing import Optional
 import click
 from rich.console import Console
 
-from beatport_sync import api, db, matching, musickit, sync
+from playlist_syncer import api, db, matching, musickit, sync
 
 console = Console()
 
 
 @click.group()
 def cli():
+    """playlist-syncer — sync playlists across music platforms."""
+
+
+@cli.group(name="music-beatport-sync")
+def music_beatport_sync():
     """Apple Music → Beatport playlist sync."""
     db.init_db()
 
 
-@cli.command()
+@music_beatport_sync.command()
 def check_connections():
     """Verify MusicKit authorization and Beatport credentials."""
     console.print("Checking MusicKit…", end=" ")
@@ -41,7 +46,7 @@ def check_connections():
         console.print(f"[red]FAILED[/red]\n{e}")
 
 
-@cli.command(name="list-playlists")
+@music_beatport_sync.command(name="list-playlists")
 def list_playlists_cmd():
     """List Apple Music playlists available for sync."""
     console.print("Fetching playlists from Apple Music…")
@@ -55,7 +60,7 @@ def list_playlists_cmd():
     console.print(f"\n[dim]{len(names)} playlists[/dim]")
 
 
-@cli.command(name="sync")
+@music_beatport_sync.command(name="sync")
 @click.option("--playlist", "-p", default=None, help="Apple Music playlist name to sync.")
 @click.option("--library", "use_library", is_flag=True,
               help="Sync songs added to library (Music app 'Songs' tab).")

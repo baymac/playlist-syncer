@@ -27,29 +27,29 @@ The first run will prompt the macOS Music app to grant MusicKit access.
 
 ```bash
 # Verify both connections
-uv run beatport-sync check-connections
+uv run playlist-syncer music-beatport-sync check-connections
 
 # List Apple Music playlists
-uv run beatport-sync list-playlists
+uv run playlist-syncer music-beatport-sync list-playlists
 
 # Sync a single playlist (mirrors into a Beatport playlist of the same name —
 # no genre classification, just direct track-for-track copy of matches)
-uv run beatport-sync sync --playlist "My Playlist"
+uv run playlist-syncer music-beatport-sync sync --playlist "My Playlist"
 
 # Sync all songs added to your library (cursor-aware — only new songs after the last run)
-uv run beatport-sync sync --library
+uv run playlist-syncer music-beatport-sync sync --library
 
 # Sync your "Favourite Songs" playlist
-uv run beatport-sync sync --favorites
+uv run playlist-syncer music-beatport-sync sync --favorites
 
 # Library + Favourites union
-uv run beatport-sync sync --library-and-favorites
+uv run playlist-syncer music-beatport-sync sync --library-and-favorites
 
 # Everything in your music library (no filter)
-uv run beatport-sync sync --all
+uv run playlist-syncer music-beatport-sync sync --all
 
 # Dry-run any of the above
-uv run beatport-sync sync --library --dry-run
+uv run playlist-syncer music-beatport-sync sync --library --dry-run
 ```
 
 Useful flags: `--limit N`, `--verbose`, `--threshold 0.72`.
@@ -57,8 +57,8 @@ Useful flags: `--limit N`, `--verbose`, `--threshold 0.72`.
 ## Layout
 
 ```
-beatport_sync/      # main package
-  cli.py            # Click commands
+playlist_syncer/    # main package
+  cli.py            # Click commands (playlist-syncer → music-beatport-sync → …)
   sync.py           # the sync loop
   api.py            # Beatport HTTP client + Playwright token capture
   matching.py       # fuzzy title/artist matching
@@ -66,7 +66,7 @@ beatport_sync/      # main package
   musickit.py       # Swift bridge wrapper
   db.py             # SQLite persistence (synced tracks, run history, cursor, token cache)
   bridge/
-    musickit_bridge.swift   # compiled on first run, cached in ~/.cache/beatport-sync
+    musickit_bridge.swift   # compiled on first run, cached in ~/.cache/playlist-syncer
 
 helpers/            # one-off Apple Music utilities (export to CSV, backup, restore, clear)
 tests/              # pytest suite

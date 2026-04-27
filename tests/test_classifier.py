@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from beatport_sync import classifier, matching
+from playlist_syncer import classifier, matching
 
 bp = types.SimpleNamespace(
     classify=classifier.classify,

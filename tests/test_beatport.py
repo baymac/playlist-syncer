@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from beatport_sync import api
+from playlist_syncer import api
 
 bp = types.SimpleNamespace(Beatport=api.Beatport)
 

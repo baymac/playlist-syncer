@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 _BRIDGE_SRC = Path(__file__).resolve().parent / "bridge" / "musickit_bridge.swift"
-_CACHE_DIR = Path.home() / ".cache" / "beatport-sync"
+_CACHE_DIR = Path.home() / ".cache" / "playlist-syncer"
 
 
 def _bridge_binary() -> Path:

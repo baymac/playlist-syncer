@@ -1,4 +1,4 @@
-// Apple Music bridge for beatport-sync CLI.
+// Apple Music bridge for playlist-syncer CLI.
 // Outputs NDJSON to stdout — one JSON object per line.
 // Each record: catalog_id, library_id, name, artist, album, genre, loved, playlists
 //

@@ -20,7 +20,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
-from beatport_sync import api, classifier, db, matching, musickit
+from playlist_syncer import api, classifier, db, matching, musickit
 
 console = Console()
 
