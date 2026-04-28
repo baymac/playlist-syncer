@@ -217,9 +217,46 @@ class Beatport:
             page += 1
         return ids
 
+    def list_playlist_items(self, playlist_id: int) -> list[dict]:
+        """Return raw playlist track entries, each containing item `id` and catalog `track_id`."""
+        items: list[dict] = []
+        page = 1
+        while True:
+            data = self._request(
+                "GET",
+                f"{API_ROOT}/my/playlists/{playlist_id}/tracks/",
+                params={"page": page, "per_page": 100},
+            ).json()
+            items.extend(data.get("results", []))
+            if not data.get("next"):
+                break
+            page += 1
+        return items
+
     def add_track(self, dest_id: int, track_id: int) -> dict:
         return self._request(
             "POST",
             f"{API_ROOT}/my/playlists/{dest_id}/tracks/bulk/",
             json={"track_ids": [track_id]},
         ).json()
+
+    def delete_track(self, playlist_id: int, track_id: int) -> None:
+        """Remove a track from a playlist using its internal playlist item ID."""
+        items = self.list_playlist_items(playlist_id)
+        item_id: Optional[int] = None
+        for item in items:
+            catalog_id = item.get("track_id") or item.get("track", {}).get("id")
+            if catalog_id == track_id:
+                item_id = item.get("id")
+                break
+
+        if item_id is None:
+            raise ValueError(
+                f"Track {track_id} not found in playlist {playlist_id}."
+            )
+
+        self._request(
+            "DELETE",
+            f"{API_ROOT}/my/playlists/{playlist_id}/tracks/bulk/",
+            json={"item_ids": [item_id]},
+        )
