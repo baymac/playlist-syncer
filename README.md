@@ -68,7 +68,7 @@ playlist_syncer/    # main package
   bridge/
     musickit_bridge.swift   # compiled on first run, cached in ~/.cache/playlist-syncer
 
-helpers/            # one-off Apple Music utilities (export to CSV, backup, restore, clear)
+helpers/            # one-off utilities (Apple Music: export/backup/restore/clear; Beatport: delete track from playlist)
 tests/              # pytest suite
 state/              # local DB, NDJSON cache, run logs (gitignored)
 docs/               # project notes and writeup
