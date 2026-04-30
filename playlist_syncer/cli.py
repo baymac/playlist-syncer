@@ -142,5 +142,49 @@ def detect_sync_cmd(
     )
 
 
+@cli.group(name="detect-music-sync")
+def detect_music_sync():
+    """track-detect → Apple Music sync."""
+    db.init_db()
+    db.init_detect_db()
+
+
+@detect_music_sync.command(name="sync")
+@click.option(
+    "--db", "detect_db", required=True, type=click.Path(exists=True, path_type=Path),
+    help="Path to the track-detect SQLite database.",
+)
+@click.option("--playlist", "-p", default=None,
+              help="Apple Music playlist name. Created if it does not exist. "
+                   "Omit to add tracks to the library instead.")
+@click.option("--dry-run", is_flag=True, help="Show what would be synced without making changes.")
+@click.option("--limit", default=0, help="Stop after processing N tracks (0 = no limit).")
+@click.option("--verbose", "-v", is_flag=True, help="Print per-track details.")
+def detect_music_sync_cmd(
+    detect_db: Path,
+    playlist: Optional[str],
+    dry_run: bool,
+    limit: int,
+    verbose: bool,
+):
+    """Sync tracks from a track-detect database to Apple Music.
+
+    Playlist mode (--playlist): searches local Music library by title+artist and
+    adds matching tracks to the named playlist (created if missing). For tracks
+    not yet in the library, opens the URL scheme to add them (macOS 13+) then
+    retries. Tracks still missing are not marked terminal — retried on next run.
+    Library mode (no --playlist): opens music:// URL scheme per track; tracks
+    may be added silently on macOS 13+.
+    State is tracked in ~/.playlist-syncer/detect_sync.db.
+    """
+    sync.run_sync_detected_to_music(
+        detect_db=detect_db,
+        playlist=playlist,
+        dry_run=dry_run,
+        limit=limit,
+        verbose=verbose,
+    )
+
+
 if __name__ == "__main__":
     cli()

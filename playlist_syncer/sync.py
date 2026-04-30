@@ -466,6 +466,9 @@ def run_sync_detected(
     """
     db.init_detect_db()
     is_playlist_mode = playlist is not None
+    # Genre mode tracks state per-track (no_match, fuzzy_miss are terminal).
+    # Playlist mode is stateless — the Beatport playlist itself is the ground truth;
+    # duplicate detection happens via dest_track_ids on each run.
     source_key = f"detect:{detect_db.name}"
 
     if dry_run:
@@ -505,20 +508,27 @@ def run_sync_detected(
     username, password = require_env()
     beatport, http_client = make_bp_client(username, password)
 
-    synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
-    console.print(f"[dim]{len(synced_set)} tracks already processed for {detect_db.name}[/dim]")
-
     console.print(f"Loading tracks from {detect_db}…")
     all_tracks = db.get_all_detected_tracks(detect_db)
-    tracks = [t for t in all_tracks if str(t["id"]) not in synced_set]
-    already_processed = len(all_tracks) - len(tracks)
-    if limit:
-        tracks = tracks[:limit]
-    console.print(
-        f"[bold]{len(all_tracks)}[/bold] tracks total"
-        f" — [bold]{len(tracks)}[/bold] to process"
-        f" ([dim]{already_processed} already processed[/dim])"
-    )
+
+    if is_playlist_mode:
+        # No state — process all tracks every run; Beatport playlist deduplicates.
+        tracks = all_tracks
+        if limit:
+            tracks = tracks[:limit]
+        console.print(f"[bold]{len(all_tracks)}[/bold] tracks total — [bold]{len(tracks)}[/bold] to check")
+    else:
+        synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
+        console.print(f"[dim]{len(synced_set)} tracks already processed for {detect_db.name}[/dim]")
+        tracks = [t for t in all_tracks if str(t["id"]) not in synced_set]
+        already_processed = len(all_tracks) - len(tracks)
+        if limit:
+            tracks = tracks[:limit]
+        console.print(
+            f"[bold]{len(all_tracks)}[/bold] tracks total"
+            f" — [bold]{len(tracks)}[/bold] to process"
+            f" ([dim]{already_processed} already processed[/dim])"
+        )
 
     console.print("Resolving destination playlists on Beatport…")
     dest_map = resolve_destinations(
@@ -538,7 +548,7 @@ def run_sync_detected(
     counts = {"seen": 0, "added": 0, "skipped": 0, "no_match": 0, "no_classify": 0, "failed": 0}
 
     def _mark(track_id: int, outcome: str, bp_id: Optional[int] = None, dest: Optional[str] = None) -> None:
-        if not dry_run:
+        if not dry_run and not is_playlist_mode:
             db.mark_synced(str(track_id), source_key, outcome,
                            beatport_track_id=bp_id, dest_playlist=dest,
                            db_path=db.DETECT_DB_PATH)
@@ -682,4 +692,180 @@ def run_sync_detected(
     console.print(f"  No Beatport match: {counts['no_match']}")
     console.print(f"  No genre classify: {counts['no_classify']}")
     console.print(f"  Errors (retry):    {counts['failed']}")
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+
+def run_sync_detected_to_music(
+    detect_db: Path,
+    playlist: Optional[str],
+    dry_run: bool,
+    limit: int,
+    verbose: bool,
+) -> None:
+    """Sync tracks from a track-detect DB to Apple Music library or a named playlist.
+
+    Playlist mode: searches local Music library by title+artist, then opens URL
+    scheme for missing tracks (macOS 13+) and retries. Tracks still not found
+    after both passes are not marked terminal — retried next run as Music syncs.
+    Library mode: opens URL scheme per track (best-effort; no confirmation possible).
+    State is tracked in ~/.playlist-syncer/detect_sync.db under source key
+    detect-music:<filename>. The source track-detect DB is never modified.
+    """
+    db.init_detect_db()
+    source_key = f"detect-music:{detect_db.name}"
+    dest_label = f"playlist '{playlist}'" if playlist else "library"
+
+    if dry_run:
+        console.print("[yellow]DRY RUN[/yellow] — no changes will be made")
+    console.print(f"Syncing [bold]{detect_db.name}[/bold] → Apple Music {dest_label}")
+
+    run_id = db.start_sync_run(source_key, db_path=db.DETECT_DB_PATH)
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_path = _LOG_DIR / f"{date_str}_detect-music-sync_{run_id}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
+
+    def _log(plain: str, rich: str = "") -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        log_file.write(f"{ts}  {plain}\n")
+        log_file.flush()
+        if verbose:
+            progress.log(rich or plain)
+
+    synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
+    console.print(f"[dim]{len(synced_set)} tracks already processed for {detect_db.name}[/dim]")
+
+    all_tracks = db.get_all_detected_tracks(detect_db)
+    pending = [t for t in all_tracks if str(t["id"]) not in synced_set]
+    already_done = len(all_tracks) - len(pending)
+
+    # Playlist mode: title+artist search — apple_music_id not required.
+    # Library mode: URL scheme — apple_music_id required.
+    if playlist:
+        to_sync = pending
+        no_id = []
+    else:
+        no_id = [t for t in pending if not t.get("apple_music_id")]
+        to_sync = [t for t in pending if t.get("apple_music_id")]
+
+    if limit:
+        to_sync = to_sync[:limit]
+
+    console.print(
+        f"[bold]{len(all_tracks)}[/bold] tracks total"
+        f" — [bold]{len(to_sync)}[/bold] to add"
+        f" ([dim]{already_done} already processed"
+        + (f", {len(no_id)} no Apple Music ID" if no_id else "")
+        + "[/dim])"
+    )
+
+    counts = {"seen": 0, "added": 0, "no_id": len(no_id), "not_found": 0, "failed": 0}
+
+    # Mark tracks without apple_music_id as terminal immediately (library mode only).
+    if not dry_run:
+        for t in no_id:
+            db.mark_synced(str(t["id"]), source_key, "no_apple_music_id",
+                           db_path=db.DETECT_DB_PATH)
+
+    if dry_run:
+        for t in to_sync:
+            _log(
+                f"would_add  {t.get('artist', '')} — {t.get('title', '')}",
+                f"[green]would add:[/green] {t.get('artist', '')} — {t.get('title', '')}",
+            )
+        counts["added"] = len(to_sync)
+        counts["seen"] = len(to_sync)
+    elif to_sync:
+        id_to_track = {str(t["id"]): t for t in to_sync}
+
+        console.print(f"Sending {len(to_sync)} tracks to Apple Music…")
+        try:
+            if playlist:
+                results = musickit.add_tracks_to_playlist(playlist, to_sync)
+            else:
+                results = musickit.add_tracks_to_library(to_sync)
+        except RuntimeError as e:
+            console.print(f"[red]Apple Music error:[/red] {e}")
+            db.finish_sync_run(run_id, tracks_seen=0, tracks_added=0,
+                               tracks_skipped=0, tracks_failed=len(to_sync),
+                               status="error", db_path=db.DETECT_DB_PATH)
+            log_file.write(f"error  {e}\n")
+            log_file.close()
+            return
+
+        with progress:
+            task = progress.add_task("Processing results…", total=len(results))
+            for res in results:
+                progress.update(task, advance=1)
+                detect_id = res.get("id", "")
+                status = res.get("status", "error")
+                track = id_to_track.get(detect_id)
+                if not track:
+                    continue
+                counts["seen"] += 1
+                artist = track.get("artist", "")
+                title = track.get("title", "")
+                progress.update(task, description=f"{artist} — {title}")
+
+                if status == "added":
+                    db.mark_synced(str(track["id"]), source_key, "added",
+                                   db_path=db.DETECT_DB_PATH)
+                    counts["added"] += 1
+                    _log(f"added  {artist} — {title}",
+                         f"[green]added:[/green] {artist} — {title}")
+                elif status == "opened":
+                    db.mark_synced(str(track["id"]), source_key, "opened",
+                                   db_path=db.DETECT_DB_PATH)
+                    counts["added"] += 1
+                    _log(f"opened_in_music  {artist} — {title}",
+                         f"[green]opened in Music:[/green] {artist} — {title}")
+                elif status == "not_in_library":
+                    # Not terminal — Music may still be syncing the URL-scheme add.
+                    counts["not_found"] += 1
+                    _log(f"not_in_library  {artist} — {title}",
+                         f"[yellow]not in local library (will retry):[/yellow] {artist} — {title}")
+                else:
+                    counts["failed"] += 1
+                    _log(f"error  {artist} — {title}  {res.get('error', '')}",
+                         f"[red]error:[/red] {artist} — {title}  {res.get('error', '')}")
+
+    db.finish_sync_run(
+        run_id,
+        tracks_seen=counts["seen"],
+        tracks_added=counts["added"],
+        tracks_skipped=0,
+        tracks_failed=counts["failed"],
+        status="done",
+        db_path=db.DETECT_DB_PATH,
+    )
+
+    summary_lines = [
+        f"--- sync {'(dry run) ' if dry_run else ''}complete ---",
+        f"tracks_seen:     {counts['seen']}",
+        f"added:           {counts['added']}",
+        f"not_in_library:  {counts['not_found']}",
+        f"no_apple_id:     {counts['no_id']}",
+        f"errors_retried:  {counts['failed']}",
+    ]
+    for line in summary_lines:
+        log_file.write(line + "\n")
+    log_file.close()
+
+    console.print()
+    console.print(f"[bold]Sync {'(dry run) ' if dry_run else ''}complete[/bold]")
+    console.print(f"  Tracks added:       {counts['added']}")
+    console.print(f"  Not in library yet: {counts['not_found']}")
+    console.print(f"  No Apple Music ID:  {counts['no_id']}")
+    console.print(f"  Errors (retry):     {counts['failed']}")
     console.print(f"[dim]Log: {log_path}[/dim]")
