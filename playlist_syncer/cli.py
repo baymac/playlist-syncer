@@ -102,6 +102,7 @@ def sync_cmd(playlist: Optional[str], use_library: bool, use_favorites: bool,
 @cli.group(name="detect-beatport-sync")
 def detect_beatport_sync():
     """track-detect → Beatport playlist sync."""
+    db.init_db()
 
 
 @detect_beatport_sync.command(name="sync")
