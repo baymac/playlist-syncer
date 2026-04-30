@@ -30,7 +30,7 @@ LIB_AND_FAV_KEY = "__library_and_fav__"
 ALL_KEY = "__all__"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_LOG_DIR = _REPO_ROOT / "state" / "logs"
+_LOG_DIR = Path.home() / ".playlist-syncer" / "logs"
 _BEATPORT_CSV = _REPO_ROOT / ".context" / "attachments" / "My Beatport Library.csv"
 
 
@@ -210,7 +210,8 @@ def run_sync(
 
     run_id = db.start_sync_run(source_key)
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = _LOG_DIR / f"run_{run_id}.log"
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_path = _LOG_DIR / f"{date_str}_apple-music-sync_{run_id}.log"
     log_file = log_path.open("w", encoding="utf-8")
     console.print(f"[dim]Log: {log_path}[/dim]")
 
@@ -443,5 +444,242 @@ def run_sync(
     console.print(f"  No Beatport match: {counts['no_match']}")
     console.print(f"  No genre classify: {counts['no_classify']}")
     console.print(f"  No catalog ID:     {counts['no_catalog_id']}")
+    console.print(f"  Errors (retry):    {counts['failed']}")
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+
+def run_sync_detected(
+    detect_db: Path,
+    dry_run: bool,
+    limit: int,
+    verbose: bool,
+    threshold: float,
+    playlist: Optional[str],
+) -> None:
+    """Sync tracks from a track-detect SQLite DB to Beatport playlists.
+
+    State is kept in state/detect_sync.db (separate from the Apple Music sync DB).
+    The source track-detect DB is never written to.
+    All terminal outcomes (added, duplicate, no_match, no_classify) are recorded
+    so tracks are not re-processed on subsequent runs. Only search errors are
+    retried. Fuzzy misses are visible in the run log for manual review.
+    """
+    db.init_detect_db()
+    is_playlist_mode = playlist is not None
+    source_key = f"detect:{detect_db.name}"
+
+    if dry_run:
+        console.print("[yellow]DRY RUN[/yellow] — no changes will be made")
+
+    if is_playlist_mode:
+        console.print(
+            f"Syncing [bold]{detect_db.name}[/bold] → Beatport playlist [bold]{playlist}[/bold]"
+        )
+    else:
+        console.print(f"Syncing [bold]{detect_db.name}[/bold] → Beatport genre playlists")
+
+    run_id = db.start_sync_run(source_key, db_path=db.DETECT_DB_PATH)
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    log_path = _LOG_DIR / f"{date_str}_detect-db-sync_{run_id}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
+
+    def _log(plain: str, rich: str = "") -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
+        log_file.write(f"{ts}  {plain}\n")
+        log_file.flush()
+        if verbose:
+            progress.log(rich or plain)
+
+    username, password = require_env()
+    beatport, http_client = make_bp_client(username, password)
+
+    synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
+    console.print(f"[dim]{len(synced_set)} tracks already processed for {detect_db.name}[/dim]")
+
+    console.print(f"Loading tracks from {detect_db}…")
+    all_tracks = db.get_all_detected_tracks(detect_db)
+    tracks = [t for t in all_tracks if str(t["id"]) not in synced_set]
+    already_processed = len(all_tracks) - len(tracks)
+    if limit:
+        tracks = tracks[:limit]
+    console.print(
+        f"[bold]{len(all_tracks)}[/bold] tracks total"
+        f" — [bold]{len(tracks)}[/bold] to process"
+        f" ([dim]{already_processed} already processed[/dim])"
+    )
+
+    console.print("Resolving destination playlists on Beatport…")
+    dest_map = resolve_destinations(
+        beatport,
+        dry_run=dry_run,
+        single_playlist_name=playlist if is_playlist_mode else None,
+    )
+
+    dest_track_ids: dict[str, set[int]] = {}
+    if not dry_run:
+        if is_playlist_mode:
+            for name, pl_id in dest_map.items():
+                dest_track_ids[name] = beatport.list_track_ids(pl_id)
+        else:
+            dest_track_ids = _load_dest_track_ids(beatport, dest_map)
+
+    counts = {"seen": 0, "added": 0, "skipped": 0, "no_match": 0, "no_classify": 0, "failed": 0}
+
+    def _mark(track_id: int, outcome: str, bp_id: Optional[int] = None, dest: Optional[str] = None) -> None:
+        if not dry_run:
+            db.mark_synced(str(track_id), source_key, outcome,
+                           beatport_track_id=bp_id, dest_playlist=dest,
+                           db_path=db.DETECT_DB_PATH)
+            synced_set.add(str(track_id))
+
+    with progress:
+        task = progress.add_task("Syncing…", total=len(tracks))
+
+        for track in tracks:
+            counts["seen"] += 1
+            progress.update(task, advance=1)
+
+            track_id = track["id"]
+            artist = track.get("artist", "")
+            title = track.get("title", "")
+
+            progress.update(task, description=f"{artist} — {title}")
+
+            query = f"{artist} {matching.search_query(title)}"
+            results = beatport.search_tracks(query, per_page=10, debug=verbose)
+
+            if results is None:
+                counts["failed"] += 1
+                _log(
+                    f"search_error  {artist} — {title}",
+                    f"[red]search error:[/red] {artist} — {title}",
+                )
+                continue  # search errors are retried
+
+            if not results:
+                _mark(track_id, "no_search_results")
+                counts["no_match"] += 1
+                _log(
+                    f"no_match  {artist} — {title}",
+                    f"[yellow]no beatport match:[/yellow] {artist} — {title}",
+                )
+                continue
+
+            match, score = matching.best_match(title, artist, results, threshold)
+            if not match:
+                _mark(track_id, "fuzzy_miss")
+                counts["no_match"] += 1
+                best = results[0]
+                bp_artists = ", ".join(a.get("name", "") for a in best.get("artists", []))
+                _log(
+                    f"fuzzy_miss  {artist} — {title}  →  best: {bp_artists} — {best.get('name', '')}  score={score:.2f}",
+                    f"[yellow]fuzzy miss:[/yellow] {artist} — {title}"
+                    f"  →  best: {bp_artists} — {best.get('name', '')} (score={score:.2f})",
+                )
+                continue
+
+            if is_playlist_mode:
+                dest_name = playlist
+            else:
+                bp_genre = (match.get("genre") or {}).get("name")
+                dest_name = classifier.classify(bp_genre)
+                if not dest_name:
+                    _mark(track_id, "no_classify")
+                    counts["no_classify"] += 1
+                    _log(
+                        f"no_classify  {artist} — {title}  (bp genre: {bp_genre!r})",
+                        f"[dim]no genre classify:[/dim] {artist} — {title}  (bp genre: {bp_genre!r})",
+                    )
+                    continue
+
+            bp_track_id = match.get("id")
+            dest_id = dest_map.get(dest_name)
+            if not dest_id:
+                counts["failed"] += 1
+                continue
+
+            if dry_run:
+                bp_name = match.get("name", "")
+                bp_artists = ", ".join(a.get("name", "") for a in match.get("artists", []))
+                _log(
+                    f"would_add  {artist} — {title}  →  {bp_artists} — {bp_name} → {dest_name} (score={score:.2f})",
+                    f"[green]would add:[/green] {artist} — {title}"
+                    f"  →  {bp_artists} — {bp_name} → [bold]{dest_name}[/bold] (score={score:.2f})",
+                )
+                counts["added"] += 1
+                continue
+
+            if bp_track_id and bp_track_id in dest_track_ids.get(dest_name, set()):
+                _mark(track_id, "duplicate", bp_id=bp_track_id, dest=dest_name)
+                counts["skipped"] += 1
+                _log(
+                    f"duplicate  {artist} — {title} → {dest_name}",
+                    f"[dim]duplicate (already in playlist):[/dim] {artist} — {title} → {dest_name}",
+                )
+                continue
+
+            try:
+                resp = beatport.add_track(dest_id, bp_track_id)
+                items = resp.get("items") or []
+                if items and bp_track_id:
+                    dest_track_ids.setdefault(dest_name, set()).add(bp_track_id)
+                outcome = "added" if items else "noop_empty_items"
+                _mark(track_id, outcome, bp_id=bp_track_id, dest=dest_name)
+                counts["added"] += 1
+                _log(
+                    f"added  {artist} — {title} → {dest_name}",
+                    f"[green]added:[/green] {artist} — {title} → [bold]{dest_name}[/bold]",
+                )
+            except Exception as e:
+                _log(
+                    f"add_failed  {artist} — {title}: {e}",
+                    f"[red]add_track failed:[/red] {artist} — {title}: {e}",
+                )
+                counts["failed"] += 1
+
+    http_client.close()
+
+    db.finish_sync_run(
+        run_id,
+        tracks_seen=counts["seen"],
+        tracks_added=counts["added"],
+        tracks_skipped=counts["skipped"],
+        tracks_failed=counts["failed"],
+        status="done",
+        db_path=db.DETECT_DB_PATH,
+    )
+
+    summary_lines = [
+        f"--- sync {'(dry run) ' if dry_run else ''}complete ---",
+        f"tracks_seen:       {counts['seen']}",
+        f"added:             {counts['added']}",
+        f"duplicates:        {counts['skipped']}",
+        f"no_beatport_match: {counts['no_match']}",
+        f"no_genre_classify: {counts['no_classify']}",
+        f"errors_retried:    {counts['failed']}",
+    ]
+    for line in summary_lines:
+        log_file.write(line + "\n")
+    log_file.close()
+
+    console.print()
+    console.print(f"[bold]Sync {'(dry run) ' if dry_run else ''}complete[/bold]")
+    console.print(f"  Tracks seen:       {counts['seen']}")
+    console.print(f"  Added to Beatport: {counts['added']}")
+    console.print(f"  Duplicates:        {counts['skipped']}")
+    console.print(f"  No Beatport match: {counts['no_match']}")
+    console.print(f"  No genre classify: {counts['no_classify']}")
     console.print(f"  Errors (retry):    {counts['failed']}")
     console.print(f"[dim]Log: {log_path}[/dim]")

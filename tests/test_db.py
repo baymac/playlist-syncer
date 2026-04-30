@@ -108,3 +108,90 @@ class TestTokenCache:
     def test_no_expiry_always_valid(self, tmp_db):
         db.set_token("beatport", "Bearer forever", db_path=tmp_db)
         assert db.get_token("beatport", tmp_db) == "Bearer forever"
+
+
+# --- track-detect DB helpers ---
+
+@pytest.fixture
+def detect_db(tmp_path) -> Path:
+    """A minimal track-detect SQLite DB with the tracks table."""
+    import sqlite3
+    path = tmp_path / "detect.db"
+    con = sqlite3.connect(str(path))
+    con.execute("""
+        CREATE TABLE tracks (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id       INTEGER,
+            position      INTEGER,
+            artist        TEXT NOT NULL,
+            title         TEXT NOT NULL,
+            apple_music_id  TEXT,
+            apple_music_url TEXT,
+            shazam_key    TEXT,
+            synced_at     TEXT
+        )
+    """)
+    con.executemany(
+        "INSERT INTO tracks (position, artist, title) VALUES (?, ?, ?)",
+        [(1, "Bicep", "Glue"), (2, "Four Tet", "Angel Echoes"), (3, "Burial", "Archangel")],
+    )
+    con.commit()
+    con.close()
+    return path
+
+
+class TestGetAllDetectedTracks:
+    def test_returns_all_tracks(self, detect_db):
+        tracks = db.get_all_detected_tracks(detect_db)
+        assert len(tracks) == 3
+
+    def test_ordered_by_position(self, detect_db):
+        tracks = db.get_all_detected_tracks(detect_db)
+        positions = [t["position"] for t in tracks]
+        assert positions == sorted(positions)
+
+    def test_returns_all_regardless_of_synced_at(self, detect_db):
+        import sqlite3
+        now = datetime.now(timezone.utc).isoformat()
+        con = sqlite3.connect(str(detect_db))
+        con.execute("UPDATE tracks SET synced_at = ? WHERE id = 1", (now,))
+        con.commit()
+        con.close()
+
+        tracks = db.get_all_detected_tracks(detect_db)
+        assert len(tracks) == 3  # source DB is read-only; synced_at not used for filtering
+
+
+class TestDetectSyncDb:
+    """State for detect sync lives in a separate DB, reusing the same schema functions."""
+
+    def test_init_detect_db_creates_tables(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(db, "DETECT_DB_PATH", tmp_path / "detect_sync.db")
+        db.init_detect_db()
+        import sqlite3
+        con = sqlite3.connect(str(db.DETECT_DB_PATH))
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        con.close()
+        assert {"synced_tracks", "sync_runs"} <= tables
+
+    def test_detect_synced_set_isolated_from_music_sync(self, tmp_db, tmp_path):
+        detect_state_db = tmp_path / "detect_sync.db"
+        db.init_db(detect_state_db)
+
+        db.mark_synced("1", "detect:foo.db", "added", db_path=detect_state_db)
+        db.mark_synced("1", "detect:foo.db", "added", db_path=tmp_db)
+
+        # Each DB is independent
+        assert db.load_synced_set("detect:foo.db", db_path=detect_state_db) == {"1"}
+        assert db.load_synced_set("detect:foo.db", db_path=tmp_db) == {"1"}
+        assert db.load_synced_set("some_apple_playlist", db_path=detect_state_db) == set()
+
+    def test_no_match_is_terminal_in_detect_db(self, tmp_path):
+        detect_state_db = tmp_path / "detect_sync.db"
+        db.init_db(detect_state_db)
+
+        db.mark_synced("42", "detect:foo.db", "no_search_results", db_path=detect_state_db)
+        db.mark_synced("43", "detect:foo.db", "fuzzy_miss", db_path=detect_state_db)
+
+        synced = db.load_synced_set("detect:foo.db", db_path=detect_state_db)
+        assert {"42", "43"} <= synced

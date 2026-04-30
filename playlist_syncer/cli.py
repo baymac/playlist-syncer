@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -95,6 +96,48 @@ def sync_cmd(playlist: Optional[str], use_library: bool, use_favorites: bool,
         limit=limit,
         verbose=verbose,
         threshold=threshold,
+    )
+
+
+@cli.group(name="detect-beatport-sync")
+def detect_beatport_sync():
+    """track-detect → Beatport playlist sync."""
+
+
+@detect_beatport_sync.command(name="sync")
+@click.option(
+    "--db", "detect_db", required=True, type=click.Path(exists=True, path_type=Path),
+    help="Path to the track-detect SQLite database.",
+)
+@click.option("--playlist", "-p", default=None,
+              help="Beatport destination playlist name. Defaults to genre classification.")
+@click.option("--dry-run", is_flag=True, help="Show what would be synced without making changes.")
+@click.option("--limit", default=0, help="Stop after processing N tracks (0 = no limit).")
+@click.option("--verbose", "-v", is_flag=True, help="Print Beatport search details to stderr.")
+@click.option("--threshold", default=matching.MATCH_THRESHOLD, show_default=True,
+              help="Fuzzy match threshold (0-1).")
+def detect_sync_cmd(
+    detect_db: Path,
+    playlist: Optional[str],
+    dry_run: bool,
+    limit: int,
+    verbose: bool,
+    threshold: float,
+):
+    """Sync tracks from a track-detect database to Beatport.
+
+    State is tracked in state/detect_sync.db — separate from the Apple Music
+    sync DB. The source track-detect database is never modified.
+    No-match outcomes are terminal (not retried). Only search errors are retried.
+    Check the run log for fuzzy misses to review manually.
+    """
+    sync.run_sync_detected(
+        detect_db=detect_db,
+        dry_run=dry_run,
+        limit=limit,
+        verbose=verbose,
+        threshold=threshold,
+        playlist=playlist,
     )
 
 
