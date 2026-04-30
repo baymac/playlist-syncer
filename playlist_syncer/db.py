@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).resolve().parent.parent / "state" / "sync.db"
+DB_PATH = Path.home() / ".playlist-syncer" / "sync.db"
+DETECT_DB_PATH = Path.home() / ".playlist-syncer" / "detect_sync.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS synced_tracks (
@@ -65,6 +66,10 @@ def _conn(db_path: Path = DB_PATH):
 def init_db(db_path: Path = DB_PATH) -> None:
     with _conn(db_path) as con:
         con.executescript(_SCHEMA)
+
+
+def init_detect_db() -> None:
+    init_db(DETECT_DB_PATH)
 
 
 def load_synced_set(source_playlist: str, db_path: Path = DB_PATH) -> set[str]:
@@ -170,3 +175,15 @@ def set_cursor(key: str, value: str, db_path: Path = DB_PATH) -> None:
         con.execute(
             "INSERT OR REPLACE INTO cursors (key, value) VALUES (?, ?)", (key, value)
         )
+
+
+# --- track-detect DB helpers (read-only access to external database) ---
+
+def get_all_detected_tracks(detect_db: Path) -> list[dict]:
+    """Return all rows from an external track-detect DB, ordered by position."""
+    with _conn(detect_db) as con:
+        rows = con.execute(
+            "SELECT id, position, artist, title, apple_music_id, apple_music_url, shazam_key "
+            "FROM tracks ORDER BY position"
+        ).fetchall()
+    return [dict(r) for r in rows]

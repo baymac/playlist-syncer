@@ -1,8 +1,9 @@
 # playlist-syncer
 
-CLI tool to migrate Apple Music library and playlists to Beatport genre playlists.
+CLI tool to sync music tracks to Beatport genre playlists from two sources:
 
-Reads songs from Apple Music via MusicKit, searches Beatport for each track, fuzzy-matches title + artist, classifies by Beatport genre, and adds the track to a destination playlist (auto-creating it if missing).
+1. **Apple Music** — reads your library/playlists via MusicKit, fuzzy-matches each track on Beatport, classifies by genre, and adds to destination playlists.
+2. **track-detect DB** — reads tracks detected from posts (via [track-detect](https://github.com/baymac/track-detect/)), searches Beatport, and adds matches to playlists.
 
 ## Requirements
 
@@ -10,7 +11,6 @@ Reads songs from Apple Music via MusicKit, searches Beatport for each track, fuz
 - Python 3.13+
 - [`uv`](https://docs.astral.sh/uv/) for environment management
 - A Beatport account
-- Apple Music with the songs you want to migrate
 
 ## Setup
 
@@ -24,6 +24,8 @@ export BEATPORT_PASSWORD='…'
 The first run will prompt the macOS Music app to grant MusicKit access.
 
 ## Usage
+
+### Apple Music → Beatport (`music-beatport-sync`)
 
 ```bash
 # Verify both connections
@@ -52,26 +54,39 @@ uv run playlist-syncer music-beatport-sync sync --all
 uv run playlist-syncer music-beatport-sync sync --library --dry-run
 ```
 
-Useful flags: `--limit N`, `--verbose`, `--threshold 0.72`.
+### track-detect → Beatport (`detect-beatport-sync`)
+
+```bash
+# Sync tracks from a track-detect SQLite database
+uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db
+
+# Into a specific playlist instead of genre classification
+uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db --playlist "Detected"
+
+# Dry-run
+uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db --dry-run
+```
+
+The source track-detect DB is **never modified**. Sync state is tracked in `~/.playlist-syncer/detect_sync.db`. No-match outcomes (no results, fuzzy miss, unclassifiable genre) are recorded as terminal — they are not retried on future runs. Only Beatport API errors are retried. Check the run log for fuzzy misses to review manually.
+
+Useful flags (both commands): `--limit N`, `--verbose`, `--threshold 0.72`.
 
 ## Layout
 
 ```
 playlist_syncer/    # main package
-  cli.py            # Click commands (playlist-syncer → music-beatport-sync → …)
-  sync.py           # the sync loop
+  cli.py            # Click commands
+  sync.py           # sync loops (Apple Music and track-detect)
   api.py            # Beatport HTTP client + Playwright token capture
   matching.py       # fuzzy title/artist matching
   classifier.py     # Beatport genre → destination playlist
   musickit.py       # Swift bridge wrapper
-  db.py             # SQLite persistence (synced tracks, run history, cursor, token cache)
+  db.py             # SQLite persistence
   bridge/
     musickit_bridge.swift   # compiled on first run, cached in ~/.cache/playlist-syncer
 
-helpers/            # one-off utilities (Apple Music: export/backup/restore/clear; Beatport: delete track from playlist)
+helpers/            # one-off utilities (Apple Music: export/backup/restore; Beatport: delete track)
 tests/              # pytest suite
-state/              # local DB, NDJSON cache, run logs (gitignored)
-docs/               # project notes and writeup
 ```
 
 ## Run tests
@@ -83,8 +98,12 @@ uv run pytest
 
 ## State
 
-All persistent state lives under `state/`:
+All persistent state lives under `~/.playlist-syncer/` and survives across workspace changes:
 
-- `state/sync.db` — SQLite (synced tracks, run history, library cursor, Beatport token cache)
-- `state/musickit_library.ndjson` — NDJSON snapshot of your Apple Music library
-- `state/logs/run_*.log` — per-run logs (one per `sync` invocation)
+| Path | Contents |
+|---|---|
+| `~/.playlist-syncer/sync.db` | Apple Music sync state — synced tracks, run history, library cursor, Beatport token cache |
+| `~/.playlist-syncer/detect_sync.db` | track-detect sync state — synced tracks, run history |
+| `~/.playlist-syncer/logs/YYYY-MM-DD_apple-music-sync_N.log` | Per-run logs for Apple Music syncs |
+| `~/.playlist-syncer/logs/YYYY-MM-DD_detect-db-sync_N.log` | Per-run logs for track-detect syncs |
+| `~/.playlist-syncer/apple_music_export.csv` | Apple Music library export (from helpers) |

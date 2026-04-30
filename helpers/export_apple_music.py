@@ -20,8 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = ROOT / "state" / "apple_music_export.csv"
+DEFAULT_OUTPUT = Path.home() / ".playlist-syncer" / "apple_music_export.csv"
 
 
 # ---------- AppleScript helpers ----------
