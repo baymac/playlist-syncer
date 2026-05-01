@@ -60,14 +60,15 @@ uv run playlist-syncer music-beatport-sync sync --library --dry-run
 # Sync tracks from a track-detect SQLite database
 uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db
 
-# Into a specific playlist instead of genre classification
+# Into a specific playlist instead of genre classification (accepts name or numeric ID)
 uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db --playlist "Detected"
+uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db --playlist 12345
 
 # Dry-run
 uv run playlist-syncer detect-beatport-sync sync --db /path/to/detect.db --dry-run
 ```
 
-The source track-detect DB is **never modified**. Sync state is tracked in `~/.playlist-syncer/detect_sync.db`. No-match outcomes (no results, fuzzy miss, unclassifiable genre) are recorded as terminal — they are not retried on future runs. Only Beatport API errors are retried. Check the run log for fuzzy misses to review manually.
+The source track-detect DB is **never modified**. Sync state is tracked in `~/.playlist-syncer/detect_sync.db` for both genre and playlist modes — each track's outcome is recorded after the first run so only newly added tracks are processed on subsequent runs. State is keyed per destination (genre mode and each named/ID playlist are independent). No-match outcomes (no results, fuzzy miss, unclassifiable genre) are terminal — not retried. Only Beatport API errors are retried. Check the run log for fuzzy misses to review manually.
 
 Useful flags (both commands): `--limit N`, `--verbose`, `--threshold 0.72`.
 

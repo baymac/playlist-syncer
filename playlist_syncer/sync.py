@@ -24,6 +24,15 @@ from playlist_syncer import api, classifier, db, matching, musickit
 
 console = Console()
 
+
+def _bp_url(match: dict) -> str:
+    slug = match.get("slug", "")
+    track_id = match.get("id", "")
+    if slug and track_id:
+        return f"https://www.beatport.com/track/{slug}/{track_id}"
+    return ""
+
+
 LIBRARY_KEY = "__library__"
 FAVORITES_KEY = "__favorites__"
 LIB_AND_FAV_KEY = "__library_and_fav__"
@@ -86,11 +95,14 @@ def resolve_destinations(
     name_to_id = {pl["name"]: pl["id"] for pl in playlists}
     dest_map: dict[str, int] = {}
 
+    id_to_name = {pl["id"]: pl["name"] for pl in playlists}
     targets = [single_playlist_name] if single_playlist_name else sorted(classifier.DESTINATION_PLAYLISTS)
 
     for name in targets:
         if name in name_to_id:
             dest_map[name] = name_to_id[name]
+        elif name.lstrip("-").isdigit() and int(name) in id_to_name:
+            dest_map[name] = int(name)
         elif not dry_run:
             try:
                 result = beatport.create_playlist(name)
@@ -364,13 +376,16 @@ def run_sync(
                 counts["failed"] += 1
                 continue
 
+            bp_url = _bp_url(match)
+
             if dry_run:
                 bp_name = match.get("name", "")
                 bp_artists = ", ".join(a.get("name", "") for a in match.get("artists", []))
+                url_suffix = f"  {bp_url}" if bp_url else ""
                 _log(
-                    f"would_add  {artist} — {name}  →  {bp_artists} — {bp_name} → {dest_name} (score={score:.2f})",
+                    f"would_add  {artist} — {name}  →  {bp_artists} — {bp_name} → {dest_name} (score={score:.2f}){url_suffix}",
                     f"[green]would add:[/green] {artist} — {name}"
-                    f"  →  {bp_artists} — {bp_name} → [bold]{dest_name}[/bold] (score={score:.2f})",
+                    f"  →  {bp_artists} — {bp_name} → [bold]{dest_name}[/bold] (score={score:.2f}){url_suffix}",
                 )
                 counts["added"] += 1
                 continue
@@ -380,8 +395,9 @@ def run_sync(
                                beatport_track_id=bp_track_id, dest_playlist=dest_name)
                 synced_set.add(catalog_id)
                 counts["skipped"] += 1
-                _log(f"duplicate  {artist} — {name} → {dest_name}",
-                     f"[dim]duplicate (already in playlist):[/dim] {artist} — {name} → {dest_name}")
+                url_suffix = f"  {bp_url}" if bp_url else ""
+                _log(f"duplicate  {artist} — {name} → {dest_name}{url_suffix}",
+                     f"[dim]duplicate (already in playlist):[/dim] {artist} — {name} → {dest_name}{url_suffix}")
                 continue
 
             try:
@@ -397,8 +413,9 @@ def run_sync(
                 )
                 synced_set.add(catalog_id)
                 counts["added"] += 1
-                _log(f"added  {artist} — {name} → {dest_name}",
-                     f"[green]added:[/green] {artist} — {name} → [bold]{dest_name}[/bold]")
+                url_suffix = f"  {bp_url}" if bp_url else ""
+                _log(f"added  {artist} — {name} → {dest_name}{url_suffix}",
+                     f"[green]added:[/green] {artist} — {name} → [bold]{dest_name}[/bold]{url_suffix}")
             except Exception as e:
                 _log(f"add_failed  {artist} — {name}: {e}",
                      f"[red]add_track failed:[/red] {artist} — {name}: {e}")
@@ -466,10 +483,11 @@ def run_sync_detected(
     """
     db.init_detect_db()
     is_playlist_mode = playlist is not None
-    # Genre mode tracks state per-track (no_match, fuzzy_miss are terminal).
-    # Playlist mode is stateless — the Beatport playlist itself is the ground truth;
-    # duplicate detection happens via dest_track_ids on each run.
-    source_key = f"detect:{detect_db.name}"
+    source_key = (
+        f"detect:{detect_db.name}:playlist:{playlist}"
+        if is_playlist_mode
+        else f"detect:{detect_db.name}"
+    )
 
     if dry_run:
         console.print("[yellow]DRY RUN[/yellow] — no changes will be made")
@@ -511,24 +529,18 @@ def run_sync_detected(
     console.print(f"Loading tracks from {detect_db}…")
     all_tracks = db.get_all_detected_tracks(detect_db)
 
-    if is_playlist_mode:
-        # No state — process all tracks every run; Beatport playlist deduplicates.
-        tracks = all_tracks
-        if limit:
-            tracks = tracks[:limit]
-        console.print(f"[bold]{len(all_tracks)}[/bold] tracks total — [bold]{len(tracks)}[/bold] to check")
-    else:
-        synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
-        console.print(f"[dim]{len(synced_set)} tracks already processed for {detect_db.name}[/dim]")
-        tracks = [t for t in all_tracks if str(t["id"]) not in synced_set]
-        already_processed = len(all_tracks) - len(tracks)
-        if limit:
-            tracks = tracks[:limit]
-        console.print(
-            f"[bold]{len(all_tracks)}[/bold] tracks total"
-            f" — [bold]{len(tracks)}[/bold] to process"
-            f" ([dim]{already_processed} already processed[/dim])"
-        )
+    synced_set = db.load_synced_set(source_key, db_path=db.DETECT_DB_PATH)
+    dest_label = playlist if is_playlist_mode else detect_db.name
+    console.print(f"[dim]{len(synced_set)} tracks already processed for {dest_label}[/dim]")
+    tracks = [t for t in all_tracks if str(t["id"]) not in synced_set]
+    already_processed = len(all_tracks) - len(tracks)
+    if limit:
+        tracks = tracks[:limit]
+    console.print(
+        f"[bold]{len(all_tracks)}[/bold] tracks total"
+        f" — [bold]{len(tracks)}[/bold] to process"
+        f" ([dim]{already_processed} already processed[/dim])"
+    )
 
     console.print("Resolving destination playlists on Beatport…")
     dest_map = resolve_destinations(
@@ -548,7 +560,7 @@ def run_sync_detected(
     counts = {"seen": 0, "added": 0, "skipped": 0, "no_match": 0, "no_classify": 0, "failed": 0}
 
     def _mark(track_id: int, outcome: str, bp_id: Optional[int] = None, dest: Optional[str] = None) -> None:
-        if not dry_run and not is_playlist_mode:
+        if not dry_run:
             db.mark_synced(str(track_id), source_key, outcome,
                            beatport_track_id=bp_id, dest_playlist=dest,
                            db_path=db.DETECT_DB_PATH)
@@ -615,6 +627,7 @@ def run_sync_detected(
                     continue
 
             bp_track_id = match.get("id")
+            bp_url = _bp_url(match)
             dest_id = dest_map.get(dest_name)
             if not dest_id:
                 counts["failed"] += 1
@@ -623,10 +636,11 @@ def run_sync_detected(
             if dry_run:
                 bp_name = match.get("name", "")
                 bp_artists = ", ".join(a.get("name", "") for a in match.get("artists", []))
+                url_suffix = f"  {bp_url}" if bp_url else ""
                 _log(
-                    f"would_add  {artist} — {title}  →  {bp_artists} — {bp_name} → {dest_name} (score={score:.2f})",
+                    f"would_add  {artist} — {title}  →  {bp_artists} — {bp_name} → {dest_name} (score={score:.2f}){url_suffix}",
                     f"[green]would add:[/green] {artist} — {title}"
-                    f"  →  {bp_artists} — {bp_name} → [bold]{dest_name}[/bold] (score={score:.2f})",
+                    f"  →  {bp_artists} — {bp_name} → [bold]{dest_name}[/bold] (score={score:.2f}){url_suffix}",
                 )
                 counts["added"] += 1
                 continue
@@ -634,9 +648,10 @@ def run_sync_detected(
             if bp_track_id and bp_track_id in dest_track_ids.get(dest_name, set()):
                 _mark(track_id, "duplicate", bp_id=bp_track_id, dest=dest_name)
                 counts["skipped"] += 1
+                url_suffix = f"  {bp_url}" if bp_url else ""
                 _log(
-                    f"duplicate  {artist} — {title} → {dest_name}",
-                    f"[dim]duplicate (already in playlist):[/dim] {artist} — {title} → {dest_name}",
+                    f"duplicate  {artist} — {title} → {dest_name}{url_suffix}",
+                    f"[dim]duplicate (already in playlist):[/dim] {artist} — {title} → {dest_name}{url_suffix}",
                 )
                 continue
 
@@ -648,9 +663,10 @@ def run_sync_detected(
                 outcome = "added" if items else "noop_empty_items"
                 _mark(track_id, outcome, bp_id=bp_track_id, dest=dest_name)
                 counts["added"] += 1
+                url_suffix = f"  {bp_url}" if bp_url else ""
                 _log(
-                    f"added  {artist} — {title} → {dest_name}",
-                    f"[green]added:[/green] {artist} — {title} → [bold]{dest_name}[/bold]",
+                    f"added  {artist} — {title} → {dest_name}{url_suffix}",
+                    f"[green]added:[/green] {artist} — {title} → [bold]{dest_name}[/bold]{url_suffix}",
                 )
             except Exception as e:
                 _log(
