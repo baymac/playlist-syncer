@@ -13,9 +13,33 @@ from playlist_syncer import api, db, matching, musickit, sync
 console = Console()
 
 
+_TOKEN_HINT = (
+    "Get a fresh token from Brave/Chrome:\n"
+    "  1. Open beatport.com/library/playlists (logged in)\n"
+    "  2. DevTools → Network → any api.beatport.com request → copy Authorization header\n"
+    "  3. Run:  playlist-syncer set-token 'Bearer eyJ...'"
+)
+
+
 @click.group()
 def cli():
     """playlist-syncer — sync playlists across music platforms."""
+
+
+@cli.command(name="set-token")
+@click.argument("token")
+def set_token_cmd(token: str):
+    """Cache a Beatport Bearer token obtained manually from your browser.
+
+    TOKEN is the full Authorization header value, e.g. 'Bearer eyJ...'
+    """
+    db.init_db()
+    db.init_detect_db()
+    if not token.startswith("Bearer "):
+        token = f"Bearer {token}"
+    db.set_token("beatport", token)
+    db.set_token("beatport", token, db_path=db.DETECT_DB_PATH)
+    console.print("[green]Beatport token cached.[/green] Run your sync command now — the token expires in ~10 minutes.")
 
 
 @cli.group(name="music-beatport-sync")
@@ -45,6 +69,8 @@ def check_connections():
         client.close()
     except Exception as e:
         console.print(f"[red]FAILED[/red]\n{e}")
+        if "401" in str(e):
+            console.print(f"\n[yellow]{_TOKEN_HINT}[/yellow]")
 
 
 @music_beatport_sync.command(name="list-playlists")

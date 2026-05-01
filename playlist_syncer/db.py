@@ -131,6 +131,11 @@ def finish_sync_run(
         )
 
 
+def delete_token(service: str, db_path: Path = DB_PATH) -> None:
+    with _conn(db_path) as con:
+        con.execute("DELETE FROM auth_cache WHERE service = ?", (service,))
+
+
 def get_token(service: str, db_path: Path = DB_PATH) -> Optional[str]:
     with _conn(db_path) as con:
         row = con.execute(
