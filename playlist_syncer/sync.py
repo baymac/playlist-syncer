@@ -56,12 +56,36 @@ def require_env() -> tuple[str, str]:
 
 
 def get_or_refresh_token(username: str, password: str) -> str:
-    """Return cached Beatport Bearer token, or capture a new one via Playwright."""
+    """Return cached Beatport Bearer token, or capture a new one via Playwright.
+
+    If BEATPORT_TOKEN is set in the environment it is used directly and cached,
+    bypassing the Playwright browser login entirely.
+    """
+    env_token = os.environ.get("BEATPORT_TOKEN", "").strip()
+    if env_token:
+        if not env_token.startswith("Bearer "):
+            env_token = f"Bearer {env_token}"
+        cached = db.get_token("beatport")
+        if cached != env_token:
+            console.print("[dim]Using Beatport token from BEATPORT_TOKEN env var.[/dim]")
+            db.set_token("beatport", env_token)
+        return env_token
     token = db.get_token("beatport")
     if token:
         return token
     console.print("[yellow]Beatport token not cached — logging in via browser (~30s)…[/yellow]")
-    token = api.capture_token(username, password)
+    try:
+        token = api.capture_token(username, password)
+    except Exception:
+        console.print(
+            "[red]Beatport login failed[/red] — Cloudflare is likely blocking the headless browser.\n\n"
+            "Get a fresh token from Brave/Chrome:\n"
+            "  1. Open [link=https://www.beatport.com/library/playlists]beatport.com/library/playlists[/link] (logged in)\n"
+            "  2. DevTools → Network → any api.beatport.com request → copy [bold]Authorization[/bold] header\n"
+            "  3. Run: [bold]uv run playlist-syncer set-token 'Bearer eyJ...'[/bold]\n"
+            "  4. Re-run your sync command."
+        )
+        sys.exit(1)
     db.set_token("beatport", token)
     return token
 
@@ -73,9 +97,22 @@ def make_bp_client(username: str, password: str) -> tuple[api.Beatport, object]:
     def on_401():
         nonlocal token
         console.print("[yellow]Token expired — re-authenticating…[/yellow]")
-        token = api.capture_token(username, password)
-        db.set_token("beatport", token)
-        client.headers["authorization"] = token
+        try:
+            token = get_or_refresh_token(username, password)
+            db.set_token("beatport", token)
+            client.headers["authorization"] = token
+        except Exception:
+            db.delete_token("beatport")
+            console.print(
+                "[red]Re-authentication failed[/red] — Cloudflare is likely blocking the headless browser.\n"
+                "Cached token cleared.\n\n"
+                "Get a fresh token from Brave/Chrome:\n"
+                "  1. Open [link=https://www.beatport.com/library/playlists]beatport.com/library/playlists[/link] (logged in)\n"
+                "  2. DevTools → Network → any api.beatport.com request → copy [bold]Authorization[/bold] header\n"
+                "  3. Run: [bold]uv run playlist-syncer set-token 'Bearer eyJ...'[/bold]\n"
+                "  4. Re-run your sync command."
+            )
+            sys.exit(1)
 
     beatport = api.Beatport(client=client, on_401=on_401)
     return beatport, client

@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
+import random
 import sys
 import time
 from dataclasses import dataclass, field
@@ -21,13 +23,90 @@ USER_AGENT = (
 
 # ---------- Auth ----------
 
+_BROWSER_PROFILE = str(__import__("pathlib").Path.home() / ".playlist-syncer" / "browser-profile")
+
+# Real browser executables on macOS — using the actual binary avoids Cloudflare's
+# headless-Chromium fingerprint detection.
+_BROWSER_CANDIDATES = [
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+]
+
+
+def _find_real_browser() -> Optional[str]:
+    import os as _os
+    for path in _BROWSER_CANDIDATES:
+        if _os.path.exists(path):
+            return path
+    return None
+
+
+_mouse_pos: dict[str, float] = {"x": 0.0, "y": 0.0}
+
+
+async def _human_move(page, target_x: float, target_y: float) -> None:
+    """Move the mouse to (target_x, target_y) along a randomised bezier curve."""
+    start_x = _mouse_pos["x"] or random.uniform(300, 700)
+    start_y = _mouse_pos["y"] or random.uniform(200, 500)
+
+    # Two control points for a cubic bezier — adds natural arc and wobble.
+    cp1_x = start_x + (target_x - start_x) * random.uniform(0.2, 0.4) + random.uniform(-60, 60)
+    cp1_y = start_y + (target_y - start_y) * random.uniform(0.1, 0.3) + random.uniform(-40, 40)
+    cp2_x = start_x + (target_x - start_x) * random.uniform(0.6, 0.8) + random.uniform(-40, 40)
+    cp2_y = start_y + (target_y - start_y) * random.uniform(0.7, 0.9) + random.uniform(-30, 30)
+
+    steps = random.randint(25, 45)
+    for i in range(1, steps + 1):
+        t = i / steps
+        u = 1 - t
+        x = u**3 * start_x + 3*u**2*t * cp1_x + 3*u*t**2 * cp2_x + t**3 * target_x
+        y = u**3 * start_y + 3*u**2*t * cp1_y + 3*u*t**2 * cp2_y + t**3 * target_y
+        # Slight speed variation — faster in the middle, slower at start/end.
+        delay = int(8 + 10 * math.sin(math.pi * t) + random.uniform(-3, 3))
+        await page.mouse.move(x, y)
+        await asyncio.sleep(delay / 1000)
+    _mouse_pos["x"] = target_x
+    _mouse_pos["y"] = target_y
+
+
+async def _human_click(page, locator) -> None:
+    """Move to a locator with human-like motion then click it."""
+    box = await locator.bounding_box()
+    if box is None:
+        await locator.click()
+        return
+    x = box["x"] + box["width"] * random.uniform(0.35, 0.65)
+    y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+    await _human_move(page, x, y)
+    await asyncio.sleep(random.uniform(0.05, 0.15))
+    await page.mouse.click(x, y)
+
+
+async def _human_type(page, locator, text: str) -> None:
+    """Click a field and type text with randomised per-character delays."""
+    await _human_click(page, locator)
+    await asyncio.sleep(random.uniform(0.1, 0.3))
+    for char in text:
+        await page.keyboard.type(char, delay=random.randint(60, 180))
+    await asyncio.sleep(random.uniform(0.1, 0.25))
+
+
 async def _capture_token_async(username: str, password: str) -> str:
     captured: dict[str, Optional[str]] = {"token": None}
+    exe = _find_real_browser()
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(
-            user_agent=USER_AGENT, viewport={"width": 1440, "height": 900}
+        # Non-headless with the real Brave/Chrome binary: indistinguishable from
+        # normal browsing. Window is placed off-screen at matching size so
+        # window.innerWidth == viewport width (Cloudflare checks this).
+        context = await p.chromium.launch_persistent_context(
+            _BROWSER_PROFILE,
+            headless=False,
+            args=["--no-sandbox", "--window-size=1440,900", "--window-position=-1500,-900"],
+            user_agent=USER_AGENT,
+            viewport={"width": 1440, "height": 900},
+            **({"executable_path": exe} if exe else {}),
         )
         page = await context.new_page()
 
@@ -38,29 +117,25 @@ async def _capture_token_async(username: str, password: str) -> str:
 
         page.on("request", grab)
         await page.goto("https://www.beatport.com/", wait_until="domcontentloaded")
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(2000)
         try:
             await page.locator("#onetrust-accept-btn-handler").click(timeout=2000)
         except Exception:
             pass
-        await (
-            page.get_by_role("link", name="Login").or_(
-                page.get_by_role("button", name="Login")
-            ).first.click()
-        )
-        await page.wait_for_url(lambda u: "account.beatport.com" in u, timeout=20_000)
-        await page.fill("input[name='username']", username)
-        await page.fill("input[name='password']", password)
-        await page.click("button[type='submit']")
-        await page.wait_for_url(
-            lambda u: "beatport.com/" in u and "account.beatport.com" not in u,
-            timeout=20_000,
-        )
-        await page.wait_for_timeout(2500)
+        await page.goto("https://account.beatport.com/settings", wait_until="domcontentloaded")
+        await page.wait_for_timeout(2000)
+        # Persistent profile may already have a valid session — only log in if
+        # the login form is present.
+        if await page.locator("input[name='username']").count() > 0:
+            await _human_type(page, page.locator("input[name='username']"), username)
+            await _human_type(page, page.locator("input[name='password']"), password)
+            await asyncio.sleep(random.uniform(0.3, 0.7))
+            await _human_click(page, page.locator("button[type='submit']"))
+            await page.wait_for_timeout(3000)
         await page.goto("https://www.beatport.com/library/playlists",
                         wait_until="domcontentloaded")
-        await page.wait_for_timeout(3000)
-        await browser.close()
+        await page.wait_for_timeout(5000)
+        await context.close()
 
     if not captured["token"]:
         raise RuntimeError(

@@ -105,6 +105,55 @@ All persistent state lives under `~/.playlist-syncer/` and survives across works
 |---|---|
 | `~/.playlist-syncer/sync.db` | Apple Music sync state — synced tracks, run history, library cursor, Beatport token cache |
 | `~/.playlist-syncer/detect_sync.db` | track-detect sync state — synced tracks, run history |
+| `~/.playlist-syncer/browser-profile/` | Persistent Chromium profile used for token capture (keeps Cloudflare clearance cookies) |
 | `~/.playlist-syncer/logs/YYYY-MM-DD_apple-music-sync_N.log` | Per-run logs for Apple Music syncs |
 | `~/.playlist-syncer/logs/YYYY-MM-DD_detect-db-sync_N.log` | Per-run logs for track-detect syncs |
 | `~/.playlist-syncer/apple_music_export.csv` | Apple Music library export (from helpers) |
+
+## Beatport token & Cloudflare troubleshooting
+
+The tool captures a Beatport Bearer token by driving a headless Chromium browser via Playwright. The token is cached in `sync.db` and reused across runs. When it expires the browser re-logs in automatically.
+
+**How token capture works**
+
+1. Chromium opens `www.beatport.com` (Cloudflare clearance obtained).
+2. Navigates to `account.beatport.com/settings` and fills in `BEATPORT_USERNAME` / `BEATPORT_PASSWORD`.
+3. After login, navigates to `www.beatport.com/library/playlists` — the API request from that page carries the Bearer token, which the tool intercepts and caches.
+
+The Chromium session is stored in `~/.playlist-syncer/browser-profile/` so Cloudflare cookies persist between re-auth runs.
+
+**When Cloudflare blocks the headless browser**
+
+The tool will print a clear message and exit — no crash, no traceback. When you see it, follow these steps:
+
+1. Open Brave → `www.beatport.com/library/playlists` (logged in)
+2. DevTools → Network tab → click any `api.beatport.com` request → copy the `Authorization` header value
+3. Run:
+   ```bash
+   uv run playlist-syncer set-token 'Bearer eyJ...'
+   ```
+4. Re-run your sync command immediately — the token expires in ~10 minutes.
+
+The tool reprints these exact steps every time it's blocked, so you never need to remember them.
+
+**Other causes of login failure**
+
+- **Stale browser profile** — delete it and retry (Playwright will rebuild it):
+  ```bash
+  rm -rf ~/.playlist-syncer/browser-profile
+  ```
+- **IP temporarily flagged** — wait a few minutes or switch networks, then retry.
+- **Wrong credentials** — check `BEATPORT_USERNAME` / `BEATPORT_PASSWORD` are set, then run `check-connections`.
+- **Beatport login page changed** — Playwright is filling the wrong fields. Screenshots saved to `~/bp_login_debug/` on each failed attempt show what the browser actually sees.
+
+**Preventing frequent re-auth**
+
+**Preventing frequent re-auth**
+
+The token has no explicit expiry set by Beatport — it's valid until revoked or until Beatport rotates keys. Logging out of Beatport in a real browser, changing your password, or Beatport pushing a new release can invalidate the cached token. If re-auth fails repeatedly, delete the cached token from the DB:
+
+```bash
+sqlite3 ~/.playlist-syncer/sync.db "DELETE FROM auth_cache WHERE service='beatport';"
+```
+
+Then run `check-connections` to trigger a fresh login interactively before the next sync.
