@@ -42,6 +42,16 @@ def set_token_cmd(token: str):
     console.print("[green]Beatport token cached.[/green] Run your sync command now — the token expires in ~10 minutes.")
 
 
+@cli.command(name="clear-token")
+def clear_token_cmd():
+    """Delete the cached Beatport token, forcing a fresh login on the next run."""
+    db.init_db()
+    db.init_detect_db()
+    db.delete_token("beatport")
+    db.delete_token("beatport", db_path=db.DETECT_DB_PATH)
+    console.print("[green]Beatport token cleared.[/green] Run check-connections to trigger a fresh login.")
+
+
 @cli.group(name="music-beatport-sync")
 def music_beatport_sync():
     """Apple Music → Beatport playlist sync."""
