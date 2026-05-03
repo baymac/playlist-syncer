@@ -142,18 +142,11 @@ The tool reprints these exact steps every time it's blocked, so you never need t
   ```bash
   rm -rf ~/.playlist-syncer/browser-profile
   ```
+- **Stale cached token** — force a fresh login by clearing the token:
+  ```bash
+  uv run playlist-syncer clear-token
+  ```
+  Then run `check-connections` to trigger a fresh login before the next sync.
 - **IP temporarily flagged** — wait a few minutes or switch networks, then retry.
 - **Wrong credentials** — check `BEATPORT_USERNAME` / `BEATPORT_PASSWORD` are set, then run `check-connections`.
 - **Beatport login page changed** — Playwright is filling the wrong fields. Screenshots saved to `~/bp_login_debug/` on each failed attempt show what the browser actually sees.
-
-**Preventing frequent re-auth**
-
-**Preventing frequent re-auth**
-
-The token has no explicit expiry set by Beatport — it's valid until revoked or until Beatport rotates keys. Logging out of Beatport in a real browser, changing your password, or Beatport pushing a new release can invalidate the cached token. If re-auth fails repeatedly, delete the cached token from the DB:
-
-```bash
-sqlite3 ~/.playlist-syncer/sync.db "DELETE FROM auth_cache WHERE service='beatport';"
-```
-
-Then run `check-connections` to trigger a fresh login interactively before the next sync.
